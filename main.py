@@ -1,26 +1,41 @@
 import os
-import requests
-import asyncio
-import logging
 import json
+import logging
+import asyncio
+import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ApplicationBuilder,
+)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8044073952:AAGZrSQ2zUEmWGMfbne9F5IEY0nQNckNXTo")
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# BOT_TOKEN ortam değişkeninden alınır, yoksa hata fırlatılır
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is missing! Please set it.")
+
 POOL_ADDRESS = os.getenv("POOL_ADDRESS", "0xc84edbf1e3fef5e4583aaa0f818cdfebfcae095b")
-INTERVAL = int(os.getenv("INTERVAL", 30))
+INTERVAL = int(os.getenv("INTERVAL", "30"))
 TOKEN_NAME = os.getenv("TOKEN_NAME", "OMEMEX")
-IMAGE_URL = os.getenv("IMAGE_URL", "https://apricot-rational-booby-281.mypinata.cloud/ipfs/bafybeib6snjshzd5n5asfcv42ckuoldzo7gjswctat6wrliz3fnm7zjezm")
+IMAGE_URL = os.getenv(
+    "IMAGE_URL",
+    "https://apricot-rational-booby-281.mypinata.cloud/ipfs/bafybeib6snjshzd5n5asfcv42ckuoldzo7gjswctat6wrliz3fnm7zjezm"
+)
 CHAT_FILE = "data/chat_id.json"
 GECKOTERMINAL_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}/trades"
 GECKOTERMINAL_POOL_INFO_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}"
-LARGE_BUY_THRESHOLD_TOKEN = float(os.getenv("LARGE_BUY_THRESHOLD_TOKEN", 5000.0))
-LARGE_BUY_THRESHOLD_USD = float(os.getenv("LARGE_BUY_THRESHOLD_USD", 50.0))
+LARGE_BUY_THRESHOLD_TOKEN = float(os.getenv("LARGE_BUY_THRESHOLD_TOKEN", "5000.0"))
+LARGE_BUY_THRESHOLD_USD = float(os.getenv("LARGE_BUY_THRESHOLD_USD", "50.0"))
 SWAP_URL = "https://swap.omax.app/swap"
 METAMASK_ADD_NETWORK_URL = "https://chainlist.org/?search=omax"
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 chat_ids = set()
 processed_txs = set()
@@ -28,34 +43,43 @@ token_address = None
 base_token_price_usd_global = None
 token_symbols_map = {}
 
+
 def load_chat_ids():
     global chat_ids
     try:
-        with open(CHAT_FILE, 'r') as f:
+        with open(CHAT_FILE, "r") as f:
             data = json.load(f)
             chat_ids = set(data.get("chat_ids", []))
             logger.info(f"Loaded chat IDs: {chat_ids}")
     except FileNotFoundError:
-        logger.warning("chat_id.json not found.")
+        logger.warning(f"{CHAT_FILE} not found, starting with empty chat IDs.")
     except Exception as e:
         logger.error(f"Error loading chat IDs: {e}")
 
+
 def save_chat_ids():
-    with open(CHAT_FILE, 'w') as f:
+    os.makedirs(os.path.dirname(CHAT_FILE), exist_ok=True)
+    with open(CHAT_FILE, "w") as f:
         json.dump({"chat_ids": list(chat_ids)}, f)
     logger.info("Chat IDs saved.")
+
 
 async def start_memexbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     chat_ids.add(chat_id)
     save_chat_ids()
-    await update.message.reply_text(f"{TOKEN_NAME} buy notifications enabled for this group!")
+    await update.message.reply_text(f"{TOKEN_NAME} buy notifications enabled for this chat!")
+
 
 async def stop_memexbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
-    chat_ids.discard(chat_id)
-    save_chat_ids()
-    await update.message.reply_text(f"{TOKEN_NAME} buy notifications disabled for this group.")
+    if chat_id in chat_ids:
+        chat_ids.remove(chat_id)
+        save_chat_ids()
+        await update.message.reply_text(f"{TOKEN_NAME} buy notifications disabled for this chat.")
+    else:
+        await update.message.reply_text("You have not enabled notifications yet.")
+
 
 async def get_pool_info():
     global token_address, base_token_price_usd_global, token_symbols_map
@@ -84,17 +108,19 @@ async def get_pool_info():
         logger.error(f"Error fetching pool info: {e}")
         return None, None, None, None
 
+
 async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
     global processed_txs, token_address, token_symbols_map
 
     if not chat_ids:
-        logger.info("No active chat IDs. Skipping...")
+        logger.info("No active chat IDs. Skipping trade check.")
         return
 
+    logger.info("Checking trades...")
     try:
         omemex_price_usd, price_change_24h, market_cap_usd, womax_price_usd = await get_pool_info()
         if not token_address:
-            logger.warning("Token address not set.")
+            logger.warning("Token address not set, skipping.")
             return
 
         response = requests.get(GECKOTERMINAL_API_URL)
@@ -102,8 +128,9 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         trades = response.json().get("data", [])
 
         if not processed_txs and trades:
+            # İlk çalışmada eski işlemleri işleme, sadece işaretle
             processed_txs.update(trade.get("attributes", {}).get("tx_hash") for trade in trades)
-            logger.info("First run, skipping old trades.")
+            logger.info("First run: existing trades skipped.")
             return
 
         new_buys = []
@@ -159,7 +186,7 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
                         video=IMAGE_URL,
                         caption=message,
                         parse_mode='Markdown',
-                        reply_markup=reply_markup
+                        reply_markup=reply_markup,
                     )
                     await asyncio.sleep(1)
                 except Exception as e:
@@ -168,18 +195,23 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error fetching trades: {e}")
 
-async def main():
-    if not BOT_TOKEN:
-        logger.critical("BOT_TOKEN missing.")
-        return
 
+async def main():
     load_chat_ids()
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("omemexbuystart", start_memexbuy))
     app.add_handler(CommandHandler("omemexbuystop", stop_memexbuy))
-    app.job_queue.run_repeating(fetch_and_process_trades, interval=INTERVAL, first=5)
+
+    # JobQueue doğru çalışması için async job fonksiyonu
+    async def job_callback(context: ContextTypes.DEFAULT_TYPE):
+        await fetch_and_process_trades(context)
+
+    app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=5)
+
     logger.info("Bot is running.")
     await app.run_polling()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
