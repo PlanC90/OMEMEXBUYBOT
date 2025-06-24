@@ -5,10 +5,10 @@ import asyncio
 import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     ContextTypes,
-    JobQueue,
+    ApplicationBuilder,
 )
 
 logging.basicConfig(
@@ -80,9 +80,6 @@ async def stop_memexbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You have not enabled notifications yet.")
 
 
-# (get_pool_info ve fetch_and_process_trades fonksiyonları aynı kalabilir)
-
-
 async def get_pool_info():
     global token_address, base_token_price_usd_global, token_symbols_map
     try:
@@ -130,7 +127,6 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         trades = response.json().get("data", [])
 
         if not processed_txs and trades:
-            # İlk çalışmada eski işlemleri işleme, sadece işaretle
             processed_txs.update(trade.get("attributes", {}).get("tx_hash") for trade in trades)
             logger.info("First run: existing trades skipped.")
             return
@@ -200,12 +196,7 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     load_chat_ids()
-
-    # JobQueue'yu manuel oluşturuyoruz
-    job_queue = JobQueue()
-    await job_queue.initialize()
-
-    app = ApplicationBuilder().token(BOT_TOKEN).job_queue(job_queue).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("omemexbuystart", start_memexbuy))
     app.add_handler(CommandHandler("omemexbuystop", stop_memexbuy))
@@ -213,7 +204,7 @@ async def main():
     async def job_callback(context: ContextTypes.DEFAULT_TYPE):
         await fetch_and_process_trades(context)
 
-    job_queue.run_repeating(job_callback, interval=INTERVAL, first=5)
+    app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=5)
 
     logger.info("Bot is running.")
     await app.run_polling()
