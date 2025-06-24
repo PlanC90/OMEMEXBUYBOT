@@ -10,6 +10,8 @@ from telegram.ext import (
     ContextTypes,
     ApplicationBuilder,
 )
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -45,6 +47,24 @@ processed_txs = set()
 token_address = None
 base_token_price_usd_global = None
 token_symbols_map = {}
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Simple health check handler"""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'OK')
+    
+    def log_message(self, format, *args):
+        pass  # Suppress default logging
+
+
+def start_health_server():
+    """Start health check server"""
+    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+    server.serve_forever()
 
 
 def load_chat_ids():
@@ -261,6 +281,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def main():
     """Main function"""
     try:
+        # Start health check server in background
+        health_thread = threading.Thread(target=start_health_server, daemon=True)
+        health_thread.start()
+        logger.info(f"Health check server started on port {PORT}")
+        
         load_chat_ids()
         
         # Build application with explicit configuration
@@ -287,10 +312,9 @@ async def main():
         if app.job_queue:
             app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=10)
 
-        logger.info(f"Bot is starting on port {PORT}...")
+        logger.info("Starting Telegram bot with polling...")
         
         # Always use polling for simplicity on Render
-        logger.info("Starting bot with polling...")
         await app.run_polling(
             drop_pending_updates=True,
             close_queue=True,
