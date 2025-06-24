@@ -191,8 +191,62 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error fetching trades: {e}")
 
 
-async def process_buy_notification(buy, omemex_price_usd, price_change_24h, market_cap_usd, context):
-    """Process and send buy notification"""
+async def periodic_trade_check(app):
+    """Periodic trade checking task"""
+    while True:
+        try:
+            await fetch_and_process_trades_standalone(app)
+            await asyncio.sleep(INTERVAL)
+        except Exception as e:
+            logger.error(f"Error in periodic trade check: {e}")
+            await asyncio.sleep(INTERVAL)
+
+
+async def fetch_and_process_trades_standalone(app):
+    """Standalone version of fetch_and_process_trades for asyncio task"""
+    global processed_txs, token_address, token_symbols_map
+
+    if not chat_ids:
+        logger.info("No active chat IDs. Skipping trade check.")
+        return
+
+    logger.info("Checking trades...")
+    try:
+        omemex_price_usd, price_change_24h, market_cap_usd, womax_price_usd = await get_pool_info()
+        if not token_address:
+            logger.warning("Token address not set, skipping.")
+            return
+
+        response = requests.get(GECKOTERMINAL_API_URL, timeout=10)
+        response.raise_for_status()
+        trades = response.json().get("data", [])
+
+        # Initialize processed_txs on first run
+        if not processed_txs and trades:
+            processed_txs.update(trade.get("attributes", {}).get("tx_hash") for trade in trades if trade.get("attributes", {}).get("tx_hash"))
+            logger.info("First run: existing trades skipped.")
+            return
+
+        # Find new buy trades
+        new_buys = []
+        for trade in reversed(trades):
+            attrs = trade.get("attributes", {})
+            tx_hash = attrs.get("tx_hash")
+            kind = attrs.get("kind")
+            if tx_hash and kind == "buy" and tx_hash not in processed_txs:
+                new_buys.append(attrs)
+                processed_txs.add(tx_hash)
+
+        # Process new buys
+        for buy in new_buys:
+            await process_buy_notification_standalone(buy, omemex_price_usd, price_change_24h, market_cap_usd, app)
+
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}")
+
+
+async def process_buy_notification_standalone(buy, omemex_price_usd, price_change_24h, market_cap_usd, app):
+    """Standalone version of process_buy_notification for asyncio task"""
     try:
         from_symbol = buy.get("from_token_symbol", "WOMAX")
         to_amount = float(buy.get("to_token_amount", 0))
@@ -234,7 +288,7 @@ async def process_buy_notification(buy, omemex_price_usd, price_change_24h, mark
         # Send to all registered chats
         for cid in chat_ids.copy():  # Use copy to avoid modification during iteration
             try:
-                await context.bot.send_video(
+                await app.bot.send_video(
                     chat_id=cid,
                     video=IMAGE_URL,
                     caption=message,
@@ -288,7 +342,7 @@ async def main():
         
         load_chat_ids()
         
-        # Build application with explicit configuration
+        # Build application with job queue
         app = (
             ApplicationBuilder()
             .token(BOT_TOKEN)
@@ -305,21 +359,28 @@ async def main():
         # Add error handler
         app.add_error_handler(error_handler)
 
-        # Add job
-        async def job_callback(context: ContextTypes.DEFAULT_TYPE):
-            await fetch_and_process_trades(context)
+        # Try to use job queue, fallback to asyncio task
+        job_started = False
+        if hasattr(app, 'job_queue') and app.job_queue is not None:
+            try:
+                async def job_callback(context: ContextTypes.DEFAULT_TYPE):
+                    await fetch_and_process_trades(context)
+                
+                app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=10)
+                logger.info("Job queue started")
+                job_started = True
+            except Exception as e:
+                logger.warning(f"Failed to start job queue: {e}")
 
-        if app.job_queue:
-            app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=10)
+        # If job queue failed, use asyncio task
+        if not job_started:
+            logger.info("Using asyncio task for periodic checks")
+            asyncio.create_task(periodic_trade_check(app))
 
         logger.info("Starting Telegram bot with polling...")
         
-        # Always use polling for simplicity on Render
-        await app.run_polling(
-            drop_pending_updates=True,
-            close_queue=True,
-            stop_signals=None
-        )
+        # Use simple polling parameters
+        await app.run_polling(drop_pending_updates=True)
             
     except Exception as e:
         logger.error(f"Error in main: {e}")
