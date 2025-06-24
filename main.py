@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 import requests
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,7 +14,7 @@ from telegram.constants import ParseMode # ParseMode'u import ediyoruz
 from telegram.helpers import escape_markdown # MarkdownV2 için escape fonksiyonu
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import re # Regex için
+# import re # Regex için bu versiyonda kullanılmıyor, kaldırılabilir.
 
 # Logging ayarları
 logging.basicConfig(
@@ -31,8 +31,8 @@ if not BOT_TOKEN:
 
 POOL_ADDRESS = os.getenv("POOL_ADDRESS", "0xc84edbf1e3fef5e4583aaa0f818cdfebfcae095b")
 INTERVAL = int(os.getenv("INTERVAL", "30"))
-TOKEN_NAME = os.getenv("TOKEN_NAME", "OMEMEX") # Bu base token'ın adı
-QUOTE_TOKEN_SYMBOL = os.getenv("QUOTE_TOKEN_SYMBOL", "WOMAX") # Bu quote token'ın adı
+TOKEN_NAME = os.getenv("TOKEN_NAME", "OMEMEX")
+QUOTE_TOKEN_SYMBOL = os.getenv("QUOTE_TOKEN_SYMBOL", "WOMAX")
 IMAGE_URL = os.getenv(
     "IMAGE_URL",
     "https://apricot-rational-booby-281.mypinata.cloud/ipfs/bafybeib6snjshzd5n5asfcv42ckuoldzo7gjswctat6wrliz3fnm7zjezm"
@@ -41,7 +41,7 @@ PORT = int(os.getenv("PORT", "8080"))
 
 CHAT_FILE = "data/chat_id.json"
 GECKOTERMINAL_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}/trades"
-GECKOTERMINAL_POOL_INFO_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}?include=base_token,quote_token" # Token detaylarını da çekelim
+GECKOTERMINAL_POOL_INFO_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}?include=base_token,quote_token"
 LARGE_BUY_THRESHOLD_TOKEN = float(os.getenv("LARGE_BUY_THRESHOLD_TOKEN", "5000.0"))
 LARGE_BUY_THRESHOLD_USD = float(os.getenv("LARGE_BUY_THRESHOLD_USD", "50.0"))
 SWAP_URL = "https://swap.omax.app/swap"
@@ -50,13 +50,12 @@ METAMASK_ADD_NETWORK_URL = "https://chainlist.org/?search=omax"
 # Global variables
 chat_ids = set()
 processed_txs = set()
-base_token_api_id = None # örn: omax-chain_0xTOKENADRESI (TOKEN_NAME için)
-quote_token_api_id = None # örn: omax-chain_0xTOKENADRESI (QUOTE_TOKEN_SYMBOL için)
-token_symbols_map = {} # {'omax-chain_0x...': 'OMEMEX', 'omax-chain_0x...': 'WOMAX'}
+base_token_api_id = None
+quote_token_api_id = None
+token_symbols_map = {}
 
 
 def escape_md_v2(text: str) -> str:
-    """Helper function to escape text for MarkdownV2."""
     return escape_markdown(str(text), version=2)
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -67,7 +66,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'OK')
     def log_message(self, format, *args):
         pass
-
 
 def start_health_server():
     try:
@@ -82,7 +80,7 @@ def load_chat_ids():
     logger.info(f"Attempting to load chat IDs from: {CHAT_FILE}")
     try:
         data_dir = os.path.dirname(CHAT_FILE)
-        if not os.path.exists(data_dir) and data_dir: # data_dir boş değilse kontrol et
+        if not os.path.exists(data_dir) and data_dir:
             logger.info(f"Data directory '{data_dir}' not found. Creating it.")
             os.makedirs(data_dir, exist_ok=True)
         if os.path.exists(CHAT_FILE):
@@ -139,21 +137,13 @@ async def get_pool_info():
         logger.debug(f"Pool info API response status: {pool_response.status_code}")
         pool_response.raise_for_status()
         pool_data = pool_response.json()
-        # logger.debug(f"Pool info data: {json.dumps(pool_data, indent=2)[:1000]}...")
 
         attributes = pool_data.get("data", {}).get("attributes", {})
-        base_token_price_usd = float(attributes.get("base_token_price_usd", 0)) # Bu TOKEN_NAME fiyatı
-        # quote_token_price_usd = float(attributes.get("quote_token_price_usd", 0)) # Bu QUOTE_TOKEN fiyatı
+        base_token_price_usd = float(attributes.get("base_token_price_usd", 0))
         price_change_24h = float(attributes.get("price_change_percentage", {}).get("h24", 0))
-        fdv_usd = float(attributes.get("fdv_usd", 0)) # Bu base token (TOKEN_NAME) FDV'si
-
+        fdv_usd = float(attributes.get("fdv_usd", 0))
         logger.debug(f"Fetched prices: base_usd={base_token_price_usd}, fdv_usd={fdv_usd}, 24h_change={price_change_24h}%")
 
-        # Token ID'lerini ve sembollerini alalım
-        # `?include=base_token,quote_token` sayesinde `included` kısmında token detayları olmalı.
-        # VEYA relationships altında da olabilir. API yanıtını kontrol etmek önemli.
-        
-        # Relationships'ten ID'leri al
         relationships = pool_data.get("data", {}).get("relationships", {})
         current_base_token_api_id = relationships.get("base_token", {}).get("data", {}).get("id")
         current_quote_token_api_id = relationships.get("quote_token", {}).get("data", {}).get("id")
@@ -165,22 +155,19 @@ async def get_pool_info():
             quote_token_api_id = current_quote_token_api_id
             logger.info(f"Quote token API ID set/updated: {quote_token_api_id}")
 
-        # 'included' kısmından sembolleri ve isimleri çekmeye çalışalım
         new_symbols_map = {}
         included_tokens = pool_data.get("included", [])
         for token_data in included_tokens:
             if token_data.get("type") == "token":
-                token_id = token_data.get("id")
-                symbol = token_data.get("attributes", {}).get("symbol", "N/A_SYMBOL")
-                # name = token_data.get("attributes", {}).get("name", "N/A_NAME")
-                if token_id == base_token_api_id:
-                    new_symbols_map[token_id] = TOKEN_NAME # Ortam değişkenindeki ismi kullan
-                elif token_id == quote_token_api_id:
-                    new_symbols_map[token_id] = QUOTE_TOKEN_SYMBOL # Ortam değişkenindeki ismi kullan
-                else: # Diğer olası tokenlar için API sembolünü kullan
-                    new_symbols_map[token_id] = symbol 
+                token_id_from_included = token_data.get("id") # API'den gelen tam ID
+                symbol_from_included = token_data.get("attributes", {}).get("symbol", "N/A_SYMBOL")
+                if token_id_from_included == base_token_api_id:
+                    new_symbols_map[token_id_from_included] = TOKEN_NAME
+                elif token_id_from_included == quote_token_api_id:
+                    new_symbols_map[token_id_from_included] = QUOTE_TOKEN_SYMBOL
+                else:
+                    new_symbols_map[token_id_from_included] = symbol_from_included
         
-        # Eğer included'dan alınamazsa, varsayılanları ata
         if base_token_api_id and base_token_api_id not in new_symbols_map:
             new_symbols_map[base_token_api_id] = TOKEN_NAME
         if quote_token_api_id and quote_token_api_id not in new_symbols_map:
@@ -219,7 +206,7 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
     if omemex_price_usd is None:
         logger.warning("Could not retrieve pool info (omemex_price_usd is None). Skipping trade check.")
         return
-    if not base_token_api_id: # Base token ID'si olmadan hangi token'ı izlediğimizi bilemeyiz
+    if not base_token_api_id:
         logger.warning("Base token API ID (for OMEMEX) is not set from pool info. Cannot reliably identify trades. Skipping.")
         return
 
@@ -238,27 +225,17 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
             return
 
         new_buys_attributes_list = []
-        # API en yeni trade'i listenin başına koyar. Bu yüzden reversed() KULLANMIYORUZ.
-        for trade_item in trades:
+        for trade_item in trades: # API en yeni trade'i listenin başına koyar
             attrs = trade_item.get("attributes", {})
             tx_hash = attrs.get("tx_hash")
-            kind = attrs.get("kind") # 'buy' veya 'sell'
+            kind = attrs.get("kind")
             
-            # GeckoTerminal'de 'kind: "buy"' pool'un base_token'ının alındığı anlamına gelir.
-            # Base token'ımız TOKEN_NAME.
             if tx_hash and kind == "buy" and tx_hash not in processed_txs:
-                # Ekstra bir kontrol: to_token gerçekten bizim base_token'ımız mı?
-                # trade_to_token_id = attrs.get("to_token_address") # API yanıtına göre bu alanın adı değişebilir.
-                # Veya attrs.get("to_token", {}).get("id") olabilir, API'yi inceleyin.
-                # if trade_to_token_id == base_token_api_id: # (veya base_token_api_id.endswith(trade_to_token_id) gibi)
                 logger.info(f"NEW {TOKEN_NAME} BUY DETECTED: TX_HASH={tx_hash}, Kind={kind}")
                 new_buys_attributes_list.append(attrs)
-                # else:
-                #    logger.debug(f"TX_HASH={tx_hash} is 'buy' but to_token ({trade_to_token_id}) is not our base_token ({base_token_api_id}). Skipping.")
-            elif tx_hash in processed_txs:
-                pass 
-            elif kind != "buy":
-                pass
+            # Diğer durumlar için loglamayı azalttık
+            # elif tx_hash in processed_txs: pass
+            # elif kind != "buy": pass
             elif not tx_hash:
                 logger.warning("Trade item found with no tx_hash. Skipping.")
 
@@ -268,8 +245,6 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
                 await process_buy_notification(buy_attr_item, omemex_price_usd, price_change_24h, market_cap_usd, context)
                 processed_txs.add(buy_attr_item.get("tx_hash"))
             logger.info(f"Finished processing new buys. Total processed TXs in this session: {len(processed_txs)}")
-        # else:
-            # logger.info(f"No new {TOKEN_NAME} buy transactions found in this interval.") # Çok sık log olmaması için kapalı
 
     except requests.exceptions.Timeout:
         logger.warning(f"Timeout error fetching trades from {GECKOTERMINAL_API_URL}")
@@ -282,76 +257,70 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Unexpected error in fetch_and_process_trades: {e}", exc_info=True)
 
 async def process_buy_notification(buy_attrs, omemex_price_usd, price_change_24h, market_cap_usd, context):
-    tx_hash_for_log = buy_attrs.get('tx_hash', 'UNKNOWN_TX')
-    logger.info(f"Processing buy notification for TX_HASH: {tx_hash_for_log}")
-    # logger.debug(f"Buy attributes for TX {tx_hash_for_log}: {json.dumps(buy_attrs, indent=2)}")
+    tx_hash_from_attrs = buy_attrs.get('tx_hash')
+    if not tx_hash_from_attrs:
+        logger.error("Transaction hash is missing in buy_attrs. Cannot process notification.")
+        return
+    logger.info(f"Processing buy notification for TX_HASH: {tx_hash_from_attrs}")
 
     try:
-        # API'den gelen token ID'lerini kullan
-        api_from_token_id = buy_attrs.get("from_token", {}).get("id") # Ödenen token (örn: quote_token_api_id)
-        api_to_token_id = buy_attrs.get("to_token", {}).get("id")     # Alınan token (örn: base_token_api_id)
+        api_from_token_id = buy_attrs.get("from_token", {}).get("id")
+        api_to_token_id = buy_attrs.get("to_token", {}).get("id")
 
         from_token_symbol = token_symbols_map.get(api_from_token_id, QUOTE_TOKEN_SYMBOL)
         to_token_symbol = token_symbols_map.get(api_to_token_id, TOKEN_NAME)
-        
-        logger.debug(f"TX {tx_hash_for_log}: From_token_id={api_from_token_id} (Symbol: {from_token_symbol}), To_token_id={api_to_token_id} (Symbol: {to_token_symbol})")
+        logger.debug(f"TX {tx_hash_from_attrs}: From_token_id={api_from_token_id} (Symbol: {from_token_symbol}), To_token_id={api_to_token_id} (Symbol: {to_token_symbol})")
 
-        to_amount_str = buy_attrs.get("to_token_amount")     # Alınan TOKEN_NAME miktarı
-        from_amount_str = buy_attrs.get("from_token_amount") # Ödenen quote token miktarı
-        usd_volume_from_api = float(buy_attrs.get("volume_in_usd", 0)) # API'nin verdiği USD hacmi
+        to_amount_str = buy_attrs.get("to_token_amount")
+        from_amount_str = buy_attrs.get("from_token_amount")
+        usd_volume_from_api = float(buy_attrs.get("volume_in_usd", 0))
 
         if to_amount_str is None or from_amount_str is None:
-            logger.error(f"TX {tx_hash_for_log}: Missing amount data. to_amount: {to_amount_str}, from_amount: {from_amount_str}. Skipping.")
+            logger.error(f"TX {tx_hash_from_attrs}: Missing amount data. to_amount: {to_amount_str}, from_amount: {from_amount_str}. Skipping.")
             return
 
         to_amount = float(to_amount_str)
         from_amount = float(from_amount_str)
-        
-        # USD değeri için API'den geleni kullanalım, genellikle daha tutarlı olur.
         display_usd_value = usd_volume_from_api
-        if display_usd_value == 0 and omemex_price_usd is not None and to_amount > 0: # API'den gelmezse hesapla
+        if display_usd_value == 0 and omemex_price_usd is not None and to_amount > 0:
             display_usd_value = to_amount * omemex_price_usd
-            logger.debug(f"TX {tx_hash_for_log}: Used calculated USD value: {display_usd_value} as API volume was 0.")
-
+            logger.debug(f"TX {tx_hash_from_attrs}: Used calculated USD value: {display_usd_value} as API volume was 0.")
 
         leading = "🟢"
         if to_amount >= LARGE_BUY_THRESHOLD_TOKEN or display_usd_value >= LARGE_BUY_THRESHOLD_USD:
             leading = "🟢🟢🟢"
 
-        change_text_val = ""
+        change_text_val = "N/A" # Varsayılan
         if price_change_24h is not None:
             arrow = "▲" if price_change_24h >= 0 else "▼"
             emoji = "🟢" if price_change_24h >= 0 else "🔴"
-            # Yüzdeyi escape etmeye gerek yok, ` ` içinde değil.
             change_text_val = f"{emoji} {arrow} {abs(price_change_24h):.2f}%"
-        else:
-            change_text_val = "N/A"
+        
+        # tx_url burada tanımlanmalı
+        tx_url = f"https://omaxray.com/tx/{tx_hash_from_attrs}"
 
-        # Sayıları MarkdownV2 için güvenli hale getirelim (özellikle virgüllü ve noktalı)
-        # `escape_md_v2` fonksiyonu . ! - gibi karakterleri escape eder.
-        # Ancak f-string formatlaması (,: .8f gibi) zaten string döndürür.
-        # Bu stringleri escape etmek, formatlamayı bozabilir.
-        # Sadece Telegram'ın sorun çıkarabileceği özel karakterleri içeren stringleri escape etmeliyiz.
-        # Şimdilik doğrudan kullanalım, sorun devam ederse `escape_md_v2` ile sarmalarız.
-
-        # Virgüllü sayılar için formatlama
-        s_to_amount = f"{to_amount:,.8f}" 
+        # Sayıları string olarak formatla, escape etmeye gerek yok, ` ` içine girecekler
+        s_to_amount = f"{to_amount:,.8f}"
         s_from_amount = f"{from_amount:,.8f}"
         s_display_usd_value = f"{display_usd_value:,.2f}"
-        s_omemex_price_usd = f"{omemex_price_usd:,.10f}" # 10 ondalık çok fazla olabilir, Telegram keser
+        # OMEMEX fiyatı için çok fazla ondalık sorun yaratabilir, 8'e düşürelim
+        s_omemex_price_usd = f"{omemex_price_usd:,.8f}" 
         s_market_cap_usd = f"{market_cap_usd:,.2f}"
-
+        
+        # Mesajı MarkdownV2 için hazırla
+        # `escape_md_v2` sadece Telegram'ın özel olarak yorumlayabileceği karakterleri escape eder.
+        # Sembol adları gibi kullanıcıdan/API'den gelen metinler için iyi bir pratiktir.
         message = (
             f"{leading} *New {escape_md_v2(to_token_symbol)} Buy\\!* {leading}\n\n"
             f"🚀 *Amount Received:* `{s_to_amount}` {escape_md_v2(to_token_symbol)}\n"
             f"💰 *Amount Paid:* `{s_from_amount}` {escape_md_v2(from_token_symbol)}\n"
-            f"💲 *Value \\(USD\\):* `${s_display_usd_value}`\n" # $ işaretini escape etmeye gerek yok ` ` içinde
+            f"💲 *Value \\(USD\\):* `${s_display_usd_value}`\n" 
             f"💵 *Unit Price \\({escape_md_v2(to_token_symbol)}\\):* `${s_omemex_price_usd}`\n"
-            f"📈 *24h Change:* {change_text_val}\n"
+            f"📈 *24h Change:* {escape_md_v2(change_text_val)}\n" # change_text_val zaten emoji ve % içeriyor, escape edilebilir
             f"📊 *Market Cap \\({escape_md_v2(to_token_symbol)}\\):* `${s_market_cap_usd} USD`\n"
             f"🔐 _{escape_md_v2(TOKEN_NAME)} is strictly limited to `300,000,000,000` tokens only\\._\n"
         )
-        logger.info(f"Constructed message for TX {tx_hash_for_log} (first 200 chars, newlines replaced): {message[:200].replace(chr(10), ' ')}...")
+        logger.info(f"Constructed message for TX {tx_hash_from_attrs} (first 200 chars, newlines replaced): {message[:200].replace(chr(10), ' ')}...")
 
         buttons = [
             [InlineKeyboardButton("View Transaction", url=tx_url)],
@@ -361,52 +330,49 @@ async def process_buy_notification(buy_attrs, omemex_price_usd, price_change_24h
         reply_markup = InlineKeyboardMarkup(buttons)
 
         if not chat_ids:
-            logger.warning(f"No chat IDs to send notification for TX {tx_hash_for_log}.")
+            logger.warning(f"No chat IDs to send notification for TX {tx_hash_from_attrs}.")
             return
 
         sent_to_chats = 0
         failed_chats = []
         active_chat_list = list(chat_ids)
-        logger.info(f"Attempting to send notification for TX {tx_hash_for_log} to {len(active_chat_list)} chat(s).")
+        logger.info(f"Attempting to send notification for TX {tx_hash_from_attrs} to {len(active_chat_list)} chat(s).")
         for cid in active_chat_list:
-            logger.debug(f"Sending to chat_id: {cid} for TX {tx_hash_for_log}")
+            logger.debug(f"Sending to chat_id: {cid} for TX {tx_hash_from_attrs}")
             try:
                 await context.bot.send_video(
                     chat_id=cid,
                     video=IMAGE_URL,
                     caption=message,
-                    parse_mode=ParseMode.MARKDOWN_V2, # Açıkça MarkdownV2 kullan
+                    parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=reply_markup,
                 )
                 sent_to_chats += 1
-                logger.debug(f"Successfully sent video for TX {tx_hash_for_log} to chat_id: {cid}")
-                await asyncio.sleep(0.5) # Rate limit için biraz daha artırıldı
+                logger.debug(f"Successfully sent video for TX {tx_hash_from_attrs} to chat_id: {cid}")
+                await asyncio.sleep(0.6) # Rate limit için biraz daha artırıldı
             except Exception as e:
                 failed_chats.append(cid)
-                logger.error(f"Error sending message for TX {tx_hash_for_log} to chat ID {cid}: {e}", exc_info=False)
+                logger.error(f"Error sending message for TX {tx_hash_from_attrs} to chat ID {cid}: {e}", exc_info=False)
                 error_str = str(e).lower()
                 if "chat not found" in error_str or \
                    "bot was blocked by the user" in error_str or \
                    "user is deactivated" in error_str or \
                    "group chat was deactivated" in error_str or \
-                   "bot was kicked" in error_str or \
-                   "parse entities" in error_str: # Parse hatasını da yakala
-                    if "parse entities" not in error_str: # Sadece chat ile ilgiliyse sil
-                        logger.info(f"Removing invalid chat ID: {cid} due to error: {str(e)[:100]}")
-                        if cid in chat_ids:
-                            chat_ids.remove(cid)
-                            save_chat_ids()
-                    else: # Parse hatası ise genel bir sorun var demektir.
-                        logger.error(f"MARKDOWN PARSE ERROR for TX {tx_hash_for_log}. Message might be malformed. Error: {e}")
-        logger.info(f"Notification for TX {tx_hash_for_log} sent to {sent_to_chats}/{len(active_chat_list)} chats. Failed for: {failed_chats if failed_chats else 'None'}")
+                   "bot was kicked" in error_str:
+                    logger.info(f"Removing invalid chat ID: {cid} due to error: {str(e)[:100]}")
+                    if cid in chat_ids:
+                        chat_ids.remove(cid)
+                        save_chat_ids()
+                elif "parse entities" in error_str:
+                     logger.error(f"MARKDOWN_V2 PARSE ERROR for TX {tx_hash_from_attrs} to chat {cid}. Error: {e}. Message was: {message}")
+        logger.info(f"Notification for TX {tx_hash_from_attrs} sent to {sent_to_chats}/{len(active_chat_list)} chats. Failed for: {failed_chats if failed_chats else 'None'}")
 
     except Exception as e:
-        logger.error(f"Critical error in process_buy_notification for TX {tx_hash_for_log}: {e}", exc_info=True)
+        logger.error(f"Critical error in process_buy_notification for TX {tx_hash_from_attrs}: {e}", exc_info=True)
 
 
 async def health_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot is running! ✅ (Telegram Handler Active)")
-
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_chats = len(chat_ids)
@@ -414,23 +380,26 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     omemex_p, price_c_24h, market_c_usd = await get_pool_info()
 
     status_msg_parts = [
-        f"*📊 {escape_md_v2(TOKEN_NAME)} Bot Status*\n",
-        f"⚙️ Bot Version: `1.3 \\(MarkdownV2 Fix\\)`",
+        f"*📊 {escape_md_v2(TOKEN_NAME)} Bot Status*",
+        f"⚙️ Bot Version: `1.4 \\(tx_url & Markdown Fix\\)`",
         f"🔔 Active Chats: `{active_chats}`",
         f"🔄 Processed TXs \\(session\\): `{processed_count}`",
         f"⏱️ Check Interval: `{INTERVAL} seconds`",
-        f"💎 Target Token: `{escape_md_v2(TOKEN_NAME)}` \\(Base ID: `{escape_md_v2(str(base_token_api_id))}`\\)",
+        f"💎 Target Token: `{escape_md_v2(TOKEN_NAME)}`",
+        f"🆔 Base Token API ID: `{escape_md_v2(str(base_token_api_id))}`",
+        f"🆔 Quote Token API ID: `{escape_md_v2(str(quote_token_api_id))}`",
     ]
     if omemex_p is not None:
         status_msg_parts.extend([
-            f"💵 Current Price: `${omemex_p:,.10f}`", # $ ` ` içinde sorun olmamalı
-            f"📈 24h Change: `{price_c_24h:.2f}%`",
+            f"💵 Current Price: `${omemex_p:,.8f}`",
+            f"📈 24h Change: `{price_c_24h:.2f}%`", # % ` içinde sorun olmamalı
             f"💰 Market Cap: `${market_c_usd:,.2f}`"
         ])
     else:
         status_msg_parts.append("⚠️ Could not fetch current token price/market cap\\.")
     
-    status_msg_parts.append(f"🗺️ Token Symbols Map: `{escape_md_v2(json.dumps(token_symbols_map))}`")
+    escaped_symbols_map_str = escape_md_v2(json.dumps(token_symbols_map))
+    status_msg_parts.append(f"🗺️ Token Symbols Map: `{escaped_symbols_map_str}`")
     status_msg_parts.append(f"📂 Chat File: `{escape_md_v2(CHAT_FILE)}`")
 
     await update.message.reply_text("\n".join(status_msg_parts), parse_mode=ParseMode.MARKDOWN_V2)
@@ -438,9 +407,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
-    # Kullanıcıya genel hata mesajı (isteğe bağlı)
-    # if update and hasattr(update, 'message') and update.message:
-    #    await update.message.reply_text("An error occurred. The developers have been notified.")
 
 
 async def main():
