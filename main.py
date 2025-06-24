@@ -5,10 +5,10 @@ import asyncio
 import requests
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     ContextTypes,
-    ApplicationBuilder,
+    JobQueue,
 )
 
 logging.basicConfig(
@@ -17,7 +17,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# BOT_TOKEN ortam değişkeninden alınır, yoksa hata fırlatılır
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is missing! Please set it.")
@@ -79,6 +78,9 @@ async def stop_memexbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{TOKEN_NAME} buy notifications disabled for this chat.")
     else:
         await update.message.reply_text("You have not enabled notifications yet.")
+
+
+# (get_pool_info ve fetch_and_process_trades fonksiyonları aynı kalabilir)
 
 
 async def get_pool_info():
@@ -198,16 +200,20 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     load_chat_ids()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # JobQueue'yu manuel oluşturuyoruz
+    job_queue = JobQueue()
+    await job_queue.initialize()
+
+    app = ApplicationBuilder().token(BOT_TOKEN).job_queue(job_queue).build()
 
     app.add_handler(CommandHandler("omemexbuystart", start_memexbuy))
     app.add_handler(CommandHandler("omemexbuystop", stop_memexbuy))
 
-    # JobQueue doğru çalışması için async job fonksiyonu
     async def job_callback(context: ContextTypes.DEFAULT_TYPE):
         await fetch_and_process_trades(context)
 
-    app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=5)
+    job_queue.run_repeating(job_callback, interval=INTERVAL, first=5)
 
     logger.info("Bot is running.")
     await app.run_polling()
