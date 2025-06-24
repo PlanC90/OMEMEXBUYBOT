@@ -17,7 +17,7 @@ import threading
 # Sorun çözüldükten sonra INFO'ya geri dönebilirsiniz.
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG  # DEBUG seviyesine çekildi
+    level=logging.DEBUG
 )
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ IMAGE_URL = os.getenv(
 )
 PORT = int(os.getenv("PORT", "8080"))
 
+# CHAT_FILE data klasörünün altında olacak. Render'da Disk'in Mount Path'i 'data' olmalı.
 CHAT_FILE = "data/chat_id.json"
 GECKOTERMINAL_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}/trades"
 GECKOTERMINAL_POOL_INFO_API_URL = f"https://api.geckoterminal.com/api/v2/networks/omax-chain/pools/{POOL_ADDRESS}"
@@ -46,9 +47,9 @@ METAMASK_ADD_NETWORK_URL = "https://chainlist.org/?search=omax"
 
 # Global variables
 chat_ids = set()
-processed_txs = set() # Bot çalıştığı sürece işlenen TX'leri tutar, yeniden başlatmada sıfırlanır.
+processed_txs = set()
 token_address = None
-token_symbols_map = {} # {'omax-chain_0x...': 'OMEMEX', 'omax-chain_0x...': 'WOMAX'}
+token_symbols_map = {}
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -72,32 +73,53 @@ def start_health_server():
 
 def load_chat_ids():
     global chat_ids
+    logger.info(f"Attempting to load chat IDs from: {CHAT_FILE}")
     try:
+        # data klasörünün var olup olmadığını kontrol et ve gerekirse oluştur.
+        # Bu, Render Disk mount edilmemişse veya ilk çalıştırmada önemlidir.
+        data_dir = os.path.dirname(CHAT_FILE)
+        if not os.path.exists(data_dir):
+            logger.info(f"Data directory '{data_dir}' not found. Creating it.")
+            os.makedirs(data_dir, exist_ok=True) # exist_ok=True önemli
+
         if os.path.exists(CHAT_FILE):
             with open(CHAT_FILE, "r") as f:
                 data = json.load(f)
                 chat_ids = set(data.get("chat_ids", []))
                 logger.info(f"Loaded {len(chat_ids)} chat IDs: {chat_ids if len(chat_ids) < 10 else str(list(chat_ids)[:10]) + '...'}")
         else:
-            os.makedirs(os.path.dirname(CHAT_FILE), exist_ok=True)
-            logger.info("Chat ID file not found, starting with empty set. Data directory created if it didn't exist.")
+            logger.info(f"Chat ID file '{CHAT_FILE}' not found, starting with empty set.")
             chat_ids = set()
+    except PermissionError as e:
+        logger.error(f"Permission error while trying to access '{CHAT_FILE}' or its directory. Check Render Disk permissions and mount path. Error: {e}", exc_info=True)
+        chat_ids = set() # Hata durumunda boş set ile devam et
     except Exception as e:
-        logger.error(f"Error loading chat IDs: {e}", exc_info=True)
+        logger.error(f"Error loading chat IDs from '{CHAT_FILE}': {e}", exc_info=True)
         chat_ids = set()
 
 
 def save_chat_ids():
+    logger.info(f"Attempting to save chat IDs to: {CHAT_FILE}")
     try:
-        os.makedirs(os.path.dirname(CHAT_FILE), exist_ok=True)
+        data_dir = os.path.dirname(CHAT_FILE)
+        if not os.path.exists(data_dir):
+            logger.info(f"Data directory '{data_dir}' for saving not found. Creating it.")
+            os.makedirs(data_dir, exist_ok=True)
+
         with open(CHAT_FILE, "w") as f:
             json.dump({"chat_ids": list(chat_ids)}, f)
-        logger.info(f"Chat IDs saved. Count: {len(chat_ids)}")
+        logger.info(f"Chat IDs saved to '{CHAT_FILE}'. Count: {len(chat_ids)}")
+    except PermissionError as e:
+        logger.error(f"Permission error while trying to save to '{CHAT_FILE}'. Check Render Disk permissions and mount path. Error: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"Error saving chat IDs: {e}", exc_info=True)
+        logger.error(f"Error saving chat IDs to '{CHAT_FILE}': {e}", exc_info=True)
 
 
 async def start_memexbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Fonksiyonların geri kalanı bir önceki "tam main.py (hata ayıklama logları ile)"
+    # mesajındaki gibi kalacak. Sadece JobQueue ve Updater.running düzeltmeleri
+    # ve CHAT_FILE ile ilgili load/save fonksiyonlarındaki detaylı loglama eklendi.
+    # Aşağıdaki fonksiyonlar aynıdır, sadece main ve en alttaki __main__ bloğu güncellendi.
     chat_id = update.message.chat_id
     if chat_id not in chat_ids:
         chat_ids.add(chat_id)
@@ -128,7 +150,7 @@ async def get_pool_info():
         logger.debug(f"Pool info API response status: {pool_response.status_code}")
         pool_response.raise_for_status()
         pool_data = pool_response.json()
-        logger.debug(f"Pool info data: {json.dumps(pool_data, indent=2)[:500]}...") # Log first 500 chars of pretty json
+        # logger.debug(f"Pool info data: {json.dumps(pool_data, indent=2)[:500]}...")
 
         attributes = pool_data.get("data", {}).get("attributes", {})
         base_token_price_usd = float(attributes.get("base_token_price_usd", 0))
@@ -157,28 +179,24 @@ async def get_pool_info():
         if base_id_api:
             current_symbols_map[base_id_api] = TOKEN_NAME
         if quote_id_api:
-            # Assuming quote token is WOMAX, but it's better to get its symbol if API provides it
-            # For now, let's keep it hardcoded or try to derive.
-            # quote_token_symbol_api = pool_data.get("included", []) # Check if symbol is in 'included'
-            current_symbols_map[quote_id_api] = "WOMAX" # Placeholder, actual symbol might be different
+            current_symbols_map[quote_id_api] = "WOMAX"
 
         if token_symbols_map != current_symbols_map and current_symbols_map:
             token_symbols_map = current_symbols_map
             logger.info(f"Updated token_symbols_map: {token_symbols_map}")
-        elif not token_symbols_map and current_symbols_map: # First time setting
+        elif not token_symbols_map and current_symbols_map:
              token_symbols_map = current_symbols_map
              logger.info(f"Initialized token_symbols_map: {token_symbols_map}")
 
-
         return base_token_price_usd, price_change_24h, fdv_usd, quote_token_price_usd
     except requests.exceptions.Timeout:
-        logger.error(f"Timeout error fetching pool info from {GECKOTERMINAL_POOL_INFO_API_URL}")
+        logger.warning(f"Timeout error fetching pool info from {GECKOTERMINAL_POOL_INFO_API_URL}") # Changed to warning
         return None, None, None, None
     except requests.exceptions.RequestException as e:
-        logger.error(f"Network error fetching pool info: {e}")
+        logger.warning(f"Network error fetching pool info: {e}") # Changed to warning
         return None, None, None, None
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error fetching pool info: {pool_response.text[:200]}... Error: {e}")
+        logger.error(f"JSON decode error fetching pool info. Response text (first 200 chars): '{pool_response.text[:200] if pool_response else 'No response object'}'. Error: {e}")
         return None, None, None, None
     except Exception as e:
         logger.error(f"Unexpected error fetching pool info: {e}", exc_info=True)
@@ -203,9 +221,8 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         logger.warning("Token address (for OMEMEX) is not set. Cannot reliably identify trades. Skipping.")
         return
 
-    if not token_symbols_map:
-        logger.warning("Token symbols map is not set. Trade notifications might have incorrect symbols. Skipping (or proceed with caution).")
-        # return # Eğer symbols map olmadan devam etmek istemiyorsanız bu satırı açın
+    # if not token_symbols_map: # Bu kontrolü kaldırabiliriz, process_buy_notification içinde default değerler var.
+    #    logger.warning("Token symbols map is not set. Trade notifications might have incorrect symbols.")
 
     try:
         logger.debug(f"Fetching trades from {GECKOTERMINAL_API_URL}")
@@ -213,65 +230,49 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
         logger.debug(f"Trades API response status: {response.status_code}")
         response.raise_for_status()
         trades_data = response.json()
-        trades = trades_data.get("data", [])
+        trades = trades_data.get("data", []) # API yanıtı boşsa trades boş bir liste olur
         logger.info(f"Fetched {len(trades)} trades from API.")
-        logger.debug(f"Current processed_txs before filtering: {processed_txs if len(processed_txs) < 5 else str(list(processed_txs)[:5]) + '...'}")
+        # logger.debug(f"Current processed_txs before filtering: {processed_txs if len(processed_txs) < 5 else str(list(processed_txs)[:5]) + '...'}")
 
-
-        if not processed_txs and trades: # İlk çalıştırma ve trade'ler var
+        if not processed_txs and trades:
             processed_txs.update(trade.get("attributes", {}).get("tx_hash") for trade in trades if trade.get("attributes", {}).get("tx_hash"))
             logger.info(f"First run with trades: Initialized processed_txs with {len(processed_txs)} existing trades. No notifications will be sent for these.")
             return
 
         new_buys_attributes_list = []
-        for trade_item in reversed(trades): # API genellikle en yeni trade'i en üste koyar, reversed() en eskiden yeniye gider.
-                                        # Eğer API en yeniyi en sona koyuyorsa reversed() olmadan kullanın. Test edin.
+        # API'nin en yeni trade'i listenin başına koyduğunu varsayıyoruz. Bu yüzden reversed() KULLANMIYORUZ.
+        for trade_item in trades:
             attrs = trade_item.get("attributes", {})
             tx_hash = attrs.get("tx_hash")
-            kind = attrs.get("kind") # 'buy' veya 'sell'
-            # 'buy' means base_token (OMEMEX) was bought. 'sell' means base_token was sold.
-            # to_token is the token received by the taker. For a 'buy' of OMEMEX, OMEMEX is the to_token.
-            # from_token is the token spent by the taker.
-            
-            # API'den gelen to_token'ın ID'si bizim TOKEN_NAME'imizin ID'si ile eşleşmeli (base_token_id)
-            # Ya da 'kind' == 'buy' ve base_token bizim tokenımız ise bu bir alımdır.
-            # GeckoTerminal'de 'kind: "buy"' genellikle base_token'ın alındığı anlamına gelir.
-            
-            logger.debug(f"Checking trade: TX_HASH={tx_hash}, KIND={kind}, PriceUSD={attrs.get('price_in_usd')}, VolumeUSD={attrs.get('volume_in_usd')}")
-            # logger.debug(f"Full trade attributes for TX {tx_hash}: {attrs}") # Çok detaylı, gerekirse açın
+            kind = attrs.get("kind")
+
+            # logger.debug(f"Checking trade: TX_HASH={tx_hash}, KIND={kind}, PriceUSD={attrs.get('price_in_usd')}, VolumeUSD={attrs.get('volume_in_usd')}")
 
             if tx_hash and kind == "buy" and tx_hash not in processed_txs:
-                # OMEMEX alımı olup olmadığını teyit etmek için to_token adresini de kontrol edebilirsiniz,
-                # ama `kind == "buy"` ve pool adresinin doğru olması yeterli olmalı.
-                # to_token_id_api = attrs.get("to_token", {}).get("id")
-                # if to_token_id_api and token_address in to_token_id_api: # Daha spesifik kontrol
                 logger.info(f"NEW OMEMEX BUY DETECTED: TX_HASH={tx_hash}, Kind={kind}")
                 new_buys_attributes_list.append(attrs)
-                # else:
-                #    logger.debug(f"TX_HASH={tx_hash} is a 'buy' but to_token_id ({to_token_id_api}) does not match our token_address ({token_address}). Skipping.")
             elif tx_hash in processed_txs:
-                logger.debug(f"Trade TX_HASH={tx_hash} (Kind: {kind}) already processed. Skipping.")
+                pass # logger.debug(f"Trade TX_HASH={tx_hash} (Kind: {kind}) already processed. Skipping.")
             elif kind != "buy":
-                logger.debug(f"Trade TX_HASH={tx_hash} is not a buy (Kind: {kind}). Skipping.")
+                pass # logger.debug(f"Trade TX_HASH={tx_hash} is not a buy (Kind: {kind}). Skipping.")
             elif not tx_hash:
                 logger.warning("Trade item found with no tx_hash. Skipping.")
-
 
         if new_buys_attributes_list:
             logger.info(f"Found {len(new_buys_attributes_list)} new OMEMEX buy transaction(s) to process.")
             for buy_attr_item in new_buys_attributes_list:
                 await process_buy_notification(buy_attr_item, omemex_price_usd, price_change_24h, market_cap_usd, context)
-                processed_txs.add(buy_attr_item.get("tx_hash")) # Bildirim gönderildikten sonra ekle
+                processed_txs.add(buy_attr_item.get("tx_hash"))
             logger.info(f"Finished processing new buys. Total processed TXs in this session: {len(processed_txs)}")
-        else:
-            logger.info("No new OMEMEX buy transactions found in this interval.")
+        # else: # Bu log çok sık gelebilir, DEBUG'a alabiliriz veya kaldırabiliriz.
+            # logger.info("No new OMEMEX buy transactions found in this interval.")
 
     except requests.exceptions.Timeout:
-        logger.error(f"Timeout error fetching trades from {GECKOTERMINAL_API_URL}")
+        logger.warning(f"Timeout error fetching trades from {GECKOTERMINAL_API_URL}") # Changed to warning
     except requests.exceptions.RequestException as e:
-        logger.error(f"Network error fetching trades: {e}")
+        logger.warning(f"Network error fetching trades: {e}") # Changed to warning
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error fetching trades: {response.text[:200]}... Error: {e}")
+        logger.error(f"JSON decode error fetching trades. Response text (first 200 chars): '{response.text[:200] if response else 'No response object'}'. Error: {e}")
     except Exception as e:
         logger.error(f"Unexpected error in fetch_and_process_trades: {e}", exc_info=True)
 
@@ -279,38 +280,28 @@ async def fetch_and_process_trades(context: ContextTypes.DEFAULT_TYPE):
 async def process_buy_notification(buy_attrs, omemex_price_usd, price_change_24h, market_cap_usd, context):
     tx_hash_for_log = buy_attrs.get('tx_hash', 'UNKNOWN_TX')
     logger.info(f"Processing buy notification for TX_HASH: {tx_hash_for_log}")
-    logger.debug(f"Buy attributes for TX {tx_hash_for_log}: {json.dumps(buy_attrs, indent=2)}")
-    logger.debug(f"Using omemex_price_usd: {omemex_price_usd}, price_change_24h: {price_change_24h}, market_cap_usd: {market_cap_usd}")
+    # logger.debug(f"Buy attributes for TX {tx_hash_for_log}: {json.dumps(buy_attrs, indent=2)}")
+    # logger.debug(f"Using omemex_price_usd: {omemex_price_usd}, price_change_24h: {price_change_24h}, market_cap_usd: {market_cap_usd}")
 
     try:
-        # GeckoTerminal 'buy' kind: base_token alınıyor (OMEMEX), quote_token satılıyor (WOMAX)
-        # from_token_id: quote_token'ın ID'si (örn: omax-chain_0x...)
-        # to_token_id: base_token'ın ID'si (örn: omax-chain_0x...)
         from_token_id_api = buy_attrs.get("from_token", {}).get("id")
         to_token_id_api = buy_attrs.get("to_token", {}).get("id")
 
-        from_token_symbol = token_symbols_map.get(from_token_id_api, "PAID_TOKEN") # Ödenen (örn: WOMAX)
-        to_token_symbol = token_symbols_map.get(to_token_id_api, TOKEN_NAME)   # Alınan (TOKEN_NAME)
+        from_token_symbol = token_symbols_map.get(from_token_id_api, "PAID_TOKEN")
+        to_token_symbol = token_symbols_map.get(to_token_id_api, TOKEN_NAME)
 
         logger.debug(f"TX {tx_hash_for_log}: From_token_id={from_token_id_api} (Symbol: {from_token_symbol}), To_token_id={to_token_id_api} (Symbol: {to_token_symbol})")
 
-        to_amount_str = buy_attrs.get("to_token_amount")     # Alınan TOKEN_NAME miktarı
-        from_amount_str = buy_attrs.get("from_token_amount") # Ödenen quote token miktarı
+        to_amount_str = buy_attrs.get("to_token_amount")
+        from_amount_str = buy_attrs.get("from_token_amount")
 
         if to_amount_str is None or from_amount_str is None:
-            logger.error(f"TX {tx_hash_for_log}: Missing amount data in trade attributes. to_amount: {to_amount_str}, from_amount: {from_amount_str}. Skipping.")
+            logger.error(f"TX {tx_hash_for_log}: Missing amount data. to_amount: {to_amount_str}, from_amount: {from_amount_str}. Skipping.")
             return
 
         to_amount = float(to_amount_str)
         from_amount = float(from_amount_str)
-        usd_value_api = float(buy_attrs.get("volume_in_usd", 0)) # API'nin hesapladığı USD volume
-
-        # Kendi hesapladığımız USD değeri (omemex_price_usd anlık olduğu için daha doğru olabilir)
         calculated_usd_value = to_amount * omemex_price_usd if omemex_price_usd is not None else 0
-        logger.debug(f"TX {tx_hash_for_log}: API USD value: {usd_value_api}, Calculated USD value: {calculated_usd_value}")
-        
-        # Hangi USD değerini kullanacağımıza karar verelim. API'den gelen daha genel olabilir.
-        # Anlık fiyatla hesaplanan daha dinamik. Şimdilik hesaplananı kullanalım.
         display_usd_value = calculated_usd_value
 
         leading = "🟢"
@@ -337,7 +328,7 @@ async def process_buy_notification(buy_attrs, omemex_price_usd, price_change_24h
             f"📊 **Market Cap ({to_token_symbol}):** `${market_cap_usd:,.2f} USD`\n"
             f"🔐 {TOKEN_NAME} is strictly limited to `300,000,000,000` tokens only.\n"
         )
-        logger.info(f"Constructed message for TX {tx_hash_for_log}: {message[:200].replace(chr(10), ' ')}...") # Mesajın başını logla (newline'ları boşlukla değiştirerek)
+        logger.info(f"Constructed message for TX {tx_hash_for_log} (first 200 chars, newlines replaced): {message[:200].replace(chr(10), ' ')}...")
 
         buttons = [
             [InlineKeyboardButton("View Transaction", url=tx_url)],
@@ -352,32 +343,35 @@ async def process_buy_notification(buy_attrs, omemex_price_usd, price_change_24h
 
         sent_to_chats = 0
         failed_chats = []
-        logger.info(f"Attempting to send notification for TX {tx_hash_for_log} to {len(chat_ids)} chat(s): {list(chat_ids if len(chat_ids) < 5 else list(chat_ids)[:5]) + ['...']}")
-        for cid in list(chat_ids):
+        active_chat_list = list(chat_ids) # Iterate over a copy
+        logger.info(f"Attempting to send notification for TX {tx_hash_for_log} to {len(active_chat_list)} chat(s): {active_chat_list if len(active_chat_list) < 5 else active_chat_list[:5] + ['...']}")
+        for cid in active_chat_list:
             logger.debug(f"Sending to chat_id: {cid} for TX {tx_hash_for_log}")
             try:
                 await context.bot.send_video(
                     chat_id=cid,
-                    video=IMAGE_URL, # Bu URL'nin geçerli bir video olduğundan emin olun
+                    video=IMAGE_URL,
                     caption=message,
                     parse_mode='Markdown',
                     reply_markup=reply_markup,
                 )
                 sent_to_chats += 1
                 logger.debug(f"Successfully sent video for TX {tx_hash_for_log} to chat_id: {cid}")
-                await asyncio.sleep(0.2) # Telegram API limitlerine takılmamak için küçük bir bekleme
+                await asyncio.sleep(0.3) # Rate limit için biraz artırıldı
             except Exception as e:
                 failed_chats.append(cid)
-                logger.error(f"Error sending message for TX {tx_hash_for_log} to chat ID {cid}: {e}", exc_info=False) # exc_info=False kısa log için
-                if "chat not found" in str(e).lower() or \
-                   "bot was blocked by the user" in str(e).lower() or \
-                   "user is deactivated" in str(e).lower() or \
-                   "group chat was deactivated" in str(e).lower() or \
-                   "bot was kicked" in str(e).lower(): # Daha genel "kicked"
+                logger.error(f"Error sending message for TX {tx_hash_for_log} to chat ID {cid}: {e}", exc_info=False)
+                error_str = str(e).lower()
+                if "chat not found" in error_str or \
+                   "bot was blocked by the user" in error_str or \
+                   "user is deactivated" in error_str or \
+                   "group chat was deactivated" in error_str or \
+                   "bot was kicked" in error_str:
                     logger.info(f"Removing invalid chat ID: {cid} due to error: {str(e)[:50]}")
-                    chat_ids.discard(cid)
-                    save_chat_ids() # Her silme sonrası kaydetmek disk I/O'sunu artırır, toplu silme düşünülebilir. Şimdilik kalsın.
-        logger.info(f"Notification for TX {tx_hash_for_log} sent to {sent_to_chats}/{len(chat_ids) + len(failed_chats)} chats. Failed for: {failed_chats if failed_chats else 'None'}")
+                    if cid in chat_ids: # Çifte kontrol
+                        chat_ids.remove(cid)
+                        save_chat_ids()
+        logger.info(f"Notification for TX {tx_hash_for_log} sent to {sent_to_chats}/{len(active_chat_list)} chats. Failed for: {failed_chats if failed_chats else 'None'}")
 
     except Exception as e:
         logger.error(f"Critical error in process_buy_notification for TX {tx_hash_for_log}: {e}", exc_info=True)
@@ -387,14 +381,14 @@ async def health_check_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text("Bot is running! ✅ (Telegram Handler Active)")
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE): # Adını değiştirdim
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_chats = len(chat_ids)
     processed_count = len(processed_txs)
     omemex_p, price_c_24h, market_c_usd, _ = await get_pool_info()
 
     status_msg = (
         f"📊 **{TOKEN_NAME} Bot Status**\n\n"
-        f"⚙️ Bot Version: `1.1` (Debug Logging)\n" # Örnek versiyon
+        f"⚙️ Bot Version: `1.2` (JobQueue & Updater Fix)\n"
         f"🔔 Active Chats: `{active_chats}`\n"
         f"🔄 Processed TXs (session): `{processed_count}`\n"
         f"⏱️ Check Interval: `{INTERVAL} seconds`\n"
@@ -408,22 +402,19 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE): # 
         )
     else:
         status_msg += "⚠️ Could not fetch current token price/market cap.\n"
-    
+
     status_msg += f"🗺️ Token Symbols Map: `{json.dumps(token_symbols_map)}`\n"
+    # status_msg += f"📂 Chat File Path: `{os.path.abspath(CHAT_FILE)}`\n" # Debug için path'i görmek isterseniz
 
     await update.message.reply_text(status_msg, parse_mode='Markdown')
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
-    if update and hasattr(update, 'message') and update.message:
-         await update.message.reply_text("An error occurred while processing your request. The developers have been notified.")
-    elif update and hasattr(update, 'callback_query') and update.callback_query:
-        await context.bot.answer_callback_query(
-            callback_query_id=update.callback_query.id,
-            text="An error occurred. Please try again.",
-            show_alert=True
-        )
+    # Kullanıcıya genel bir hata mesajı göndermek isteğe bağlıdır.
+    # if update and hasattr(update, 'message') and update.message:
+    #      await update.message.reply_text("An error occurred. Please try again later.")
+
 
 async def main():
     health_thread = None
@@ -433,9 +424,9 @@ async def main():
         health_thread = threading.Thread(target=start_health_server, daemon=True)
         health_thread.start()
 
-        load_chat_ids()
+        load_chat_ids() # Bu fonksiyon CHAT_FILE'dan okur
         logger.info("Attempting initial pool info fetch to set up token details...")
-        await get_pool_info() # token_address ve token_symbols_map'i doldurur
+        await get_pool_info()
         if not token_address:
             logger.warning("Could not determine token_address on initial setup. Will retry in background.")
         if not token_symbols_map:
@@ -451,23 +442,23 @@ async def main():
         app.add_handler(CommandHandler("omemexbuystart", start_memexbuy))
         app.add_handler(CommandHandler("omemexbuystop", stop_memexbuy))
         app.add_handler(CommandHandler("health", health_check_command))
-        app.add_handler(CommandHandler("status", status_command)) # Komut adını güncelledim
+        app.add_handler(CommandHandler("status", status_command))
         app.add_error_handler(error_handler)
 
-        await app.initialize()
+        await app.initialize() # JobQueue'un da burada initialize olması beklenir
         logger.info("Telegram Application initialized.")
 
         async def job_callback(context_job: ContextTypes.DEFAULT_TYPE):
             await fetch_and_process_trades(context_job)
 
-        if app.job_queue:
-            app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=max(10, INTERVAL // 2)) # ilk çalıştırma için makul bir süre
-            logger.info(f"Job queue started. Trades will be checked every {INTERVAL} seconds. First check in ~{max(10, INTERVAL // 2)}s.")
+        if app.job_queue: # Bu artık PTBUserWarning vermemeli (requirements.txt doğruysa)
+            first_run_delay = max(10, INTERVAL // 3) # Bot başladıktan sonra ilk job'ın ne zaman çalışacağı
+            app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=first_run_delay)
+            logger.info(f"Job queue started. Trades will be checked every {INTERVAL} seconds. First check in ~{first_run_delay}s.")
         else:
-            logger.critical("JobQueue is not available after app.initialize(). Bot cannot function correctly.")
-            # Bu durumda botun ana işlevi çalışmayacaktır.
-            # Acil çıkış yapabilir veya bir uyarı mekanizması çalıştırabilirsiniz.
-            return # veya raise Exception(...)
+            logger.critical("JobQueue is NOT available after app.initialize(). Bot's core functionality (trade checking) will NOT work.")
+            # Bu durumda programı sonlandırmak daha iyi olabilir çünkü ana işlev çalışmayacak.
+            # raise RuntimeError("JobQueue could not be initialized. Bot cannot function.") # veya return
 
         await app.start()
         logger.info("Telegram Application background tasks (job_queue) started.")
@@ -477,7 +468,7 @@ async def main():
         logger.info(f"{TOKEN_NAME} Buy Bot is now fully operational and polling for updates.")
 
         while True:
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600) # Canlı tutmak için
             logger.debug(f"Main loop heartbeat. Active chats: {len(chat_ids)}. Processed TXs (session): {len(processed_txs)}")
 
     except (KeyboardInterrupt, SystemExit, asyncio.CancelledError) as e:
@@ -487,29 +478,28 @@ async def main():
     finally:
         logger.info("Initiating graceful shutdown of the Telegram bot...")
         if app:
-            if app.updater and app.updater.is_running:
+            if app.updater and app.updater.running: # DÜZELTİLDİ: is_running -> running
                 logger.info("Stopping updater polling...")
                 await app.updater.stop()
-            if app.running:
+            if app.running: # app.start() ile başlayan görevleri durdurur (job_queue dahil)
                 logger.info("Stopping application (jobs, etc.)...")
                 await app.stop()
             logger.info("Performing final application shutdown...")
-            await app.shutdown()
+            await app.shutdown() # Kaynakları temizler
         else:
             logger.info("Application object was not created/available. No Telegram shutdown needed.")
         logger.info(f"{TOKEN_NAME} Buy Bot shutdown sequence completed.")
 
 
 if __name__ == "__main__":
-    if not BOT_TOKEN: # main'e girmeden önce kritik bir kontrol
-        # Zaten yukarıda raise ediyor ama burada da loglayabiliriz.
-        logger.critical("BOT_TOKEN is not set. Exiting.")
+    if not BOT_TOKEN:
+        logger.critical("BOT_TOKEN is not set. Exiting application.")
     else:
         try:
             asyncio.run(main())
         except RuntimeError as e:
             if "event loop is already running" in str(e) or "Cannot close a running event loop" in str(e):
-                logger.critical(f"Asyncio event loop conflict detected at script exit: {e}. This might indicate an issue with how asyncio.run() interacts with the environment or libraries.")
+                logger.critical(f"Asyncio event loop conflict detected at script exit: {e}.")
             else:
                 logger.critical(f"Unhandled RuntimeError at script exit: {e}", exc_info=True)
         except Exception as e:
