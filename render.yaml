@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: POOL_ADDRESS
+        value: "0xc84edbf1e3fef5e4583aaa0f818cdfebfcae095b"
+      - key: INTERVAL
+        value: "30"
+      - key: TOKEN_NAME
+        value: "OMEMEX"
+      - key: LARGE_BUY_THRESHOLD_TOKEN
+        value: "5000.0"
+      - key: LARGE_BUY_THRESHOLD_USD
+        value: "50.0"
+      - key: RENDER
+        value: "true"
