@@ -263,8 +263,13 @@ async def main():
     try:
         load_chat_ids()
         
-        # Build application
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        # Build application with explicit configuration
+        app = (
+            ApplicationBuilder()
+            .token(BOT_TOKEN)
+            .concurrent_updates(True)
+            .build()
+        )
 
         # Add handlers
         app.add_handler(CommandHandler("omemexbuystart", start_memexbuy))
@@ -279,30 +284,23 @@ async def main():
         async def job_callback(context: ContextTypes.DEFAULT_TYPE):
             await fetch_and_process_trades(context)
 
-        app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=10)
+        if app.job_queue:
+            app.job_queue.run_repeating(job_callback, interval=INTERVAL, first=10)
 
         logger.info(f"Bot is starting on port {PORT}...")
         
-        # Use webhook for production deployment
-        if os.getenv("RENDER"):
-            webhook_url = os.getenv("WEBHOOK_URL")
-            if webhook_url:
-                await app.bot.set_webhook(url=webhook_url)
-                await app.run_webhook(
-                    listen="0.0.0.0",
-                    port=PORT,
-                    webhook_url=webhook_url,
-                    drop_pending_updates=True
-                )
-            else:
-                logger.warning("WEBHOOK_URL not set, falling back to polling")
-                await app.run_polling(drop_pending_updates=True)
-        else:
-            # Local development
-            await app.run_polling(drop_pending_updates=True)
+        # Always use polling for simplicity on Render
+        logger.info("Starting bot with polling...")
+        await app.run_polling(
+            drop_pending_updates=True,
+            close_queue=True,
+            stop_signals=None
+        )
             
     except Exception as e:
         logger.error(f"Error in main: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
